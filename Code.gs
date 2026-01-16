@@ -74,7 +74,17 @@ const FORM_DESCRIPTION = '반드시 이름과 팀을 정확히 기록해 주셔�
  * 초기 설정 함수 - 시트 생성 및 구조 설정
  */
 function initializeSheets() {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  try {
+    // SPREADSHEET_ID 확인
+    if (SPREADSHEET_ID === 'YOUR_SPREADSHEET_ID') {
+      throw new Error('SPREADSHEET_ID를 먼저 설정해주세요. Code.gs 파일 상단의 SPREADSHEET_ID를 Google Sheets ID로 변경해주세요.');
+    }
+    
+    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    
+    if (!ss) {
+      throw new Error('스프레드시트를 찾을 수 없습니다. SPREADSHEET_ID가 올바른지 확인해주세요.');
+    }
   
   // 참가자명단 시트 생성
   let sheet = ss.getSheetByName(SHEET_NAMES.PARTICIPANTS);
@@ -118,6 +128,12 @@ function initializeSheets() {
   }
   
   Logger.log('시트 초기화 완료');
+  Logger.log('생성된 시트: 참가자명단, 설문응답, 점수계산, 요약, MVP점수');
+  return '시트 초기화가 완료되었습니다!';
+  } catch (error) {
+    Logger.log(`시트 초기화 오류: ${error.toString()}`);
+    throw error;
+  }
 }
 
 /**
@@ -248,22 +264,43 @@ function processFormResponse(e) {
  * 참가자 명단 가져오기
  */
 function getParticipants() {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-  const sheet = ss.getSheetByName(SHEET_NAMES.PARTICIPANTS);
-  const data = sheet.getDataRange().getValues();
-  
-  const participants = [];
-  for (let i = 1; i < data.length; i++) {
-    if (data[i][0] && data[i][1]) {
-      participants.push({
-        name: data[i][0],
-        team: data[i][1],
-        completed: data[i][2] === '완료' || data[i][2] === true
-      });
+  try {
+    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    
+    if (!ss) {
+      throw new Error('스프레드시트를 찾을 수 없습니다. SPREADSHEET_ID를 확인해주세요.');
     }
+    
+    const sheet = ss.getSheetByName(SHEET_NAMES.PARTICIPANTS);
+    
+    if (!sheet) {
+      throw new Error(`'${SHEET_NAMES.PARTICIPANTS}' 시트를 찾을 수 없습니다. 먼저 'initializeSheets' 함수를 실행해주세요.`);
+    }
+    
+    const dataRange = sheet.getDataRange();
+    
+    if (!dataRange) {
+      return [];  // 빈 시트인 경우 빈 배열 반환
+    }
+    
+    const data = dataRange.getValues();
+    
+    const participants = [];
+    for (let i = 1; i < data.length; i++) {
+      if (data[i][0] && data[i][1]) {
+        participants.push({
+          name: data[i][0],
+          team: data[i][1],
+          completed: data[i][2] === '완료' || data[i][2] === true
+        });
+      }
+    }
+    
+    return participants;
+  } catch (error) {
+    Logger.log(`참가자 명단 가져오기 오류: ${error.toString()}`);
+    throw error;
   }
-  
-  return participants;
 }
 
 /**
@@ -489,10 +526,24 @@ function resetParticipantStatus(name, team) {
  */
 function createFormAutomatically() {
   try {
-    const participants = getParticipants();
+    // SPREADSHEET_ID 확인
+    if (SPREADSHEET_ID === 'YOUR_SPREADSHEET_ID') {
+      throw new Error('SPREADSHEET_ID를 먼저 설정해주세요. Code.gs 파일 상단의 SPREADSHEET_ID를 Google Sheets ID로 변경해주세요.');
+    }
+    
+    // 참가자 명단 가져오기
+    let participants;
+    try {
+      participants = getParticipants();
+    } catch (error) {
+      if (error.message.includes('시트를 찾을 수 없습니다')) {
+        throw new Error('참가자명단 시트가 없습니다. 먼저 "initializeSheets" 함수를 실행해주세요.');
+      }
+      throw error;
+    }
     
     if (participants.length === 0) {
-      throw new Error('참가자 명단이 비어있습니다. 먼저 참가자 명단을 입력해주세요.');
+      throw new Error('참가자 명단이 비어있습니다. 먼저 "참가자명단" 시트에 참가자 정보를 입력해주세요.');
     }
     
     // 모든 팀 목록 추출
@@ -587,10 +638,23 @@ function createFormAutomatically() {
       message: `설문지가 성공적으로 생성되었습니다!\n\nURL: ${formUrl}\n\n중요: Code.gs 파일의 FORM_ID를 "${formId}"로 업데이트하세요.`
     };
   } catch (error) {
-    Logger.log(`설문지 생성 오류: ${error.toString()}`);
+    const errorMessage = error.toString();
+    Logger.log(`설문지 생성 오류: ${errorMessage}`);
+    
+    // 사용자 친화적인 오류 메시지
+    let userMessage = `오류 발생: ${errorMessage}`;
+    
+    if (errorMessage.includes('SPREADSHEET_ID')) {
+      userMessage = 'SPREADSHEET_ID를 먼저 설정해주세요.\nCode.gs 파일 상단의 SPREADSHEET_ID를 Google Sheets ID로 변경해주세요.';
+    } else if (errorMessage.includes('시트를 찾을 수 없습니다')) {
+      userMessage = '참가자명단 시트가 없습니다.\n먼저 "initializeSheets" 함수를 실행해주세요.';
+    } else if (errorMessage.includes('참가자 명단이 비어있습니다')) {
+      userMessage = '참가자 명단이 비어있습니다.\n"참가자명단" 시트에 참가자 정보를 입력해주세요.';
+    }
+    
     return {
       success: false,
-      message: `오류 발생: ${error.toString()}`
+      message: userMessage
     };
   }
 }

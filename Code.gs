@@ -1,7 +1,39 @@
 // Google Sheets와 Google Forms 연동 자동 채점 시스템
 // 메인 스프레드시트 ID를 여기에 설정하세요
 const SPREADSHEET_ID = 'YOUR_SPREADSHEET_ID';
-const FORM_ID = 'YOUR_FORM_ID';
+
+// FORM_ID는 자동으로 저장되므로 수동 설정 불필요
+// 단, 수동으로 설정하려면 아래 주석을 해제하고 값을 입력하세요
+// const FORM_ID = 'YOUR_FORM_ID';
+
+/**
+ * FORM_ID 가져오기 (PropertiesService에서 자동으로 읽어옴)
+ */
+function getFormId() {
+  const properties = PropertiesService.getScriptProperties();
+  let formId = properties.getProperty('FORM_ID');
+  
+  // PropertiesService에 없으면 상수에서 읽기 (하위 호환성)
+  if (!formId) {
+    // 주석 처리된 상수가 있으면 사용
+    // formId = FORM_ID;
+  }
+  
+  if (!formId || formId === 'YOUR_FORM_ID') {
+    throw new Error('FORM_ID가 설정되지 않았습니다. 먼저 createFormAutomatically 함수를 실행하여 설문지를 생성해주세요.');
+  }
+  
+  return formId;
+}
+
+/**
+ * FORM_ID 저장하기
+ */
+function setFormId(formId) {
+  const properties = PropertiesService.getScriptProperties();
+  properties.setProperty('FORM_ID', formId);
+  Logger.log(`FORM_ID가 자동으로 저장되었습니다: ${formId}`);
+}
 
 // 시트 이름 상수
 const SHEET_NAMES = {
@@ -68,7 +100,7 @@ function getAllScoringItems() {
 }
 
 // 설문지 설명 텍스트
-const FORM_DESCRIPTION = '반드시 이름과 팀을 정확히 기록해 주셔야 합니다.\n\n본인 팀을 제외한 모든 팀을 평가해주세요.\n\n채점 항목:\n- 창의성 (30점): 아이디어 창의성, 실행 가능성, 차별성\n- 구현 완성도 (30점): 필수 기능, 오류 처리, 기술 이해도\n- 필요성 (30점): 확장성, 주제 적합성, 상품성\n- 발표 전달력 (10점): 발표 속도/표현, 발표자료 구성\n- 총 100점 만점\n\n※ 본인 팀 평가는 자동으로 제외되므로, 본인 팀 섹션은 건너뛰셔도 됩니다.\n※ 5팀씩 나누어 평가하실 수 있습니다.';
+const FORM_DESCRIPTION = '반드시 이름과 팀을 정확히 기록해 주셔야 합니다.\n\n본인 팀을 제외한 모든 팀을 평가해주세요.\n\n채점 항목:\n- 창의성 (30점): 아이디어 창의성, 실행 가능성, 차별성\n- 구현 완성도 (30점): 필수 기능, 오류 처리, 기술 이해도\n- 필요성 (30점): 확장성, 주제 적합성, 상품성\n- 발표 전달력 (10점): 발표 속도/표현, 발표자료 구성\n- 총 100점 만점\n\n※ 각 팀은 별도 페이지로 나뉘어 있습니다.\n※ 본인 팀인 경우 해당 페이지의 모든 항목을 건너뛰셔도 됩니다. (자동으로 제외됩니다)';
 
 /**
  * 초기 설정 함수 - 시트 생성 및 구조 설정
@@ -143,7 +175,8 @@ function processFormResponse(e) {
   try {
     const formResponse = e.response;
     const itemResponses = formResponse.getItemResponses();
-    const form = FormApp.openById(FORM_ID);
+    const formId = getFormId();
+    const form = FormApp.openById(formId);
     
     const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
     const responsesSheet = ss.getSheetByName(SHEET_NAMES.RESPONSES);
@@ -350,8 +383,9 @@ function calculateScores() {
   });
   
   // 응답 데이터 처리 (헤더 제외)
-  // 컬럼 구조: 타임스탬프, 평가자이름, 평가자팀, 평가받은팀, 11개항목점수..., 총점, MVP점수
-  const totalScoreIndex = 3 + SCORING_ITEMS.length + 1; // 평가받은팀 다음 + 11개 항목 + 1
+  // 컬럼 구조: 타임스탬프, 평가자이름, 평가자팀, 평가받은팀, 채점항목점수..., 총점, MVP점수
+  const allItems = getAllScoringItems();
+  const totalScoreIndex = 3 + allItems.length + 1; // 평가받은팀 다음 + 채점 항목 + 1
   const mvpScoreIndex = totalScoreIndex + 1;
   
   for (let i = 1; i < responses.length; i++) {
@@ -435,7 +469,9 @@ function getDashboardData() {
   const participants = getParticipants();
   const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
   const scoresSheet = ss.getSheetByName(SHEET_NAMES.SCORES);
+  const responsesSheet = ss.getSheetByName(SHEET_NAMES.RESPONSES);
   
+  // 점수 데이터
   const scores = [];
   const scoreData = scoresSheet.getDataRange().getValues();
   for (let i = 1; i < scoreData.length; i++) {
@@ -448,11 +484,89 @@ function getDashboardData() {
     });
   }
   
+  // 응답 데이터
+  const allItems = getAllScoringItems();
+  const responses = [];
+  const responseData = responsesSheet.getDataRange().getValues();
+  
+  for (let i = 1; i < responseData.length; i++) {
+    const row = responseData[i];
+    const itemScores = [];
+    
+    // 항목별 점수 추출 (4번째 컬럼부터 항목별 점수)
+    for (let j = 4; j < 4 + allItems.length; j++) {
+      itemScores.push(row[j] || 0);
+    }
+    
+    responses.push({
+      timestamp: row[0],
+      evaluatorName: row[1],
+      evaluatorTeam: row[2],
+      evaluatedTeam: row[3],
+      itemScores: itemScores,
+      totalScore: row[4 + allItems.length] || 0
+    });
+  }
+  
+  // 팀별 응답 통계
+  const teamResponseStats = {};
+  responses.forEach(response => {
+    const team = response.evaluatedTeam;
+    if (!teamResponseStats[team]) {
+      teamResponseStats[team] = {
+        team: team,
+        responseCount: 0,
+        evaluators: []
+      };
+    }
+    teamResponseStats[team].responseCount++;
+    if (!teamResponseStats[team].evaluators.includes(response.evaluatorName)) {
+      teamResponseStats[team].evaluators.push(response.evaluatorName);
+    }
+  });
+  
   return {
     participants: participants,
     scores: scores,
+    responses: responses,
+    teamResponseStats: Object.values(teamResponseStats),
     timestamp: new Date().toISOString()
   };
+}
+
+/**
+ * 특정 팀의 상세 응답 데이터 가져오기
+ */
+function getTeamResponseDetails(teamName) {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const responsesSheet = ss.getSheetByName(SHEET_NAMES.RESPONSES);
+  const allItems = getAllScoringItems();
+  
+  const responses = [];
+  const responseData = responsesSheet.getDataRange().getValues();
+  
+  for (let i = 1; i < responseData.length; i++) {
+    const row = responseData[i];
+    if (row[3] === teamName) {  // 평가받은팀 컬럼
+      const itemScores = [];
+      for (let j = 4; j < 4 + allItems.length; j++) {
+        itemScores.push({
+          itemName: allItems[j - 4].name,
+          score: row[j] || 0
+        });
+      }
+      
+      responses.push({
+        timestamp: row[0],
+        evaluatorName: row[1],
+        evaluatorTeam: row[2],
+        itemScores: itemScores,
+        totalScore: row[4 + allItems.length] || 0
+      });
+    }
+  }
+  
+  return responses;
 }
 
 /**
@@ -477,7 +591,8 @@ function include(filename) {
  */
 function reprocessAllResponses() {
   try {
-    const form = FormApp.openById(FORM_ID);
+    const formId = getFormId();
+    const form = FormApp.openById(formId);
     const formResponses = form.getResponses();
     
     const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
@@ -568,74 +683,73 @@ function createFormAutomatically() {
     teamItem.setRequired(true);
     teamItem.setChoiceValues(allTeams);
     
-    // 4. 각 팀별 채점 항목 생성 (5팀씩 그룹으로 나누기)
+    // 4. 각 팀별 채점 항목 생성 (각 팀마다 별도 페이지)
     const allItems = getAllScoringItems();
-    const teamsPerPage = 5;  // 한 번에 평가할 팀 수
     
-    // 팀을 5팀씩 그룹으로 나누기
-    for (let i = 0; i < allTeams.length; i += teamsPerPage) {
-      const teamGroup = allTeams.slice(i, i + teamsPerPage);
-      const pageNumber = Math.floor(i / teamsPerPage) + 1;
-      const totalPages = Math.ceil(allTeams.length / teamsPerPage);
-      
-      // 페이지 구분 섹션 (첫 번째 그룹이 아니면)
-      if (i > 0) {
+    // 각 팀별로 페이지 나누기
+    allTeams.forEach((team, teamIndex) => {
+      // 첫 번째 팀이 아니면 페이지 구분
+      if (teamIndex > 0) {
         const pageBreak = form.addPageBreakItem();
-        pageBreak.setTitle(`--- ${pageNumber}페이지 / 총 ${totalPages}페이지 ---`);
-        pageBreak.setHelpText(`다음 ${teamGroup.length}개 팀을 평가해주세요.`);
+        pageBreak.setTitle(`--- ${teamIndex + 1}번째 팀 평가 ---`);
+        pageBreak.setHelpText(`다음 팀을 평가해주세요. 본인 팀인 경우 이 페이지의 모든 항목을 건너뛰셔도 됩니다.`);
       }
       
-      // 각 팀별 평가 항목 추가
-      teamGroup.forEach(team => {
-        // 팀별 섹션 헤더
-        const teamSection = form.addSectionHeaderItem();
-        teamSection.setTitle(`${team} 평가 문항입니다.`);
-        teamSection.setHelpText('창의성, 구현 완성도, 필요성, 발표 전달력 부문이 있습니다.');
-        
-        // 각 카테고리별로 항목 추가
-        SCORING_ITEMS.forEach(category => {
-          // 카테고리별 항목 추가
-          category.items.forEach(item => {
-            const scaleItem = form.addScaleItem();
-            const scaleMax = item.scaleMax || 10;  // 발표 전달력은 5, 나머지는 10
-            
-            // 제목 형식: [카테고리] 항목번호. 항목명
-            const itemIndex = category.items.indexOf(item) + 1;
-            const categoryNum = SCORING_ITEMS.indexOf(category) + 1;
-            scaleItem.setTitle(`[${category.category}] ${categoryNum}-${itemIndex}. ${item.name}`);
-            
-            scaleItem.setBounds(1, scaleMax);
-            scaleItem.setRequired(true);
-            scaleItem.setLabels('매우 그렇지 않다', '매우 그렇다');
-            
-            if (item.description) {
-              scaleItem.setHelpText(item.description);
-            }
-          });
+      // 팀별 섹션 헤더
+      const teamSection = form.addSectionHeaderItem();
+      teamSection.setTitle(`${team} 평가 문항입니다.`);
+      teamSection.setHelpText('창의성, 구현 완성도, 필요성, 발표 전달력 부문이 있습니다.\n※ 본인 팀인 경우 이 페이지의 모든 항목을 건너뛰셔도 됩니다. (자동으로 제외됩니다)');
+      
+      // 각 카테고리별로 항목 추가
+      SCORING_ITEMS.forEach(category => {
+        // 카테고리별 항목 추가
+        category.items.forEach(item => {
+          const scaleItem = form.addScaleItem();
+          const scaleMax = item.scaleMax || 10;  // 발표 전달력은 5, 나머지는 10
+          
+          // 제목 형식: [카테고리] 항목번호. 항목명
+          const itemIndex = category.items.indexOf(item) + 1;
+          const categoryNum = SCORING_ITEMS.indexOf(category) + 1;
+          scaleItem.setTitle(`[${category.category}] ${categoryNum}-${itemIndex}. ${item.name}`);
+          
+          scaleItem.setBounds(1, scaleMax);
+          scaleItem.setRequired(false);  // 본인 팀인 경우 건너뛸 수 있도록 필수 해제
+          scaleItem.setLabels('매우 그렇지 않다', '매우 그렇다');
+          
+          if (item.description) {
+            scaleItem.setHelpText(item.description);
+          }
         });
       });
-    }
+    });
     
     // 설문지 설정
     form.setCollectEmail(false);
     form.setAllowResponseEdits(true);
     form.setShowLinkToRespondAgain(false);
     
-    const formUrl = form.getPublishedUrl();
+    // 설문지가 생성된 계정이 소유자이므로 자동으로 편집 권한이 있습니다
+    // 추가 설정 없이 바로 편집 가능합니다
+    
     const formId = form.getId();
+    const formEditUrl = form.getEditUrl();  // 편집 URL
+    const formPublishedUrl = form.getPublishedUrl();  // 공개 URL (응답용)
+    
+    // FORM_ID를 자동으로 저장
+    setFormId(formId);
     
     Logger.log(`설문지 생성 완료!`);
-    Logger.log(`URL: ${formUrl}`);
-    Logger.log(`ID: ${formId}`);
-    
-    // Code.gs의 FORM_ID 업데이트 안내
-    Logger.log(`\n중요: Code.gs 파일의 FORM_ID를 다음으로 업데이트하세요: ${formId}`);
+    Logger.log(`설문지 ID: ${formId}`);
+    Logger.log(`📝 편집 URL: ${formEditUrl}`);
+    Logger.log(`🔗 공개 URL (응답용): ${formPublishedUrl}`);
+    Logger.log(`✅ FORM_ID가 자동으로 저장되었습니다.`);
     
     return {
       success: true,
-      formUrl: formUrl,
       formId: formId,
-      message: `설문지가 성공적으로 생성되었습니다!\n\nURL: ${formUrl}\n\n중요: Code.gs 파일의 FORM_ID를 "${formId}"로 업데이트하세요.`
+      formEditUrl: formEditUrl,
+      formPublishedUrl: formPublishedUrl,
+      message: `설문지가 성공적으로 생성되었습니다!\n\n📝 편집 URL (설문지 수정용):\n${formEditUrl}\n\n🔗 공개 URL (응답자용):\n${formPublishedUrl}\n\n✅ FORM_ID가 자동으로 저장되었습니다.`
     };
   } catch (error) {
     const errorMessage = error.toString();
@@ -664,11 +778,8 @@ function createFormAutomatically() {
  */
 function updateExistingForm() {
   try {
-    if (FORM_ID === 'YOUR_FORM_ID') {
-      throw new Error('FORM_ID를 먼저 설정해주세요.');
-    }
-    
-    const form = FormApp.openById(FORM_ID);
+    const formId = getFormId();
+    const form = FormApp.openById(formId);
     const participants = getParticipants();
     const allTeams = [...new Set(participants.map(p => p.team))];
     

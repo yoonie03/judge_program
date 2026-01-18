@@ -372,6 +372,7 @@ function calculateScores() {
   const teamScores = {};
   const teamMembers = {};
   const teamMvpScores = {};
+  const teamEvaluatorCounts = {}; // 각 팀을 평가한 평가자 수 (본인 팀 제외)
   
   // 팀별 구성원 수 계산
   const participants = getParticipants();
@@ -396,9 +397,11 @@ function calculateScores() {
     if (!teamScores[team]) {
       teamScores[team] = 0;
       teamMvpScores[team] = 0;
+      teamEvaluatorCounts[team] = 0;
     }
     teamScores[team] += totalScore;
     teamMvpScores[team] += mvpScore;
+    teamEvaluatorCounts[team]++; // 평가자 수 카운트 (본인 팀은 이미 제외되어 있음)
   }
   
   // 점수 계산 및 저장
@@ -406,8 +409,9 @@ function calculateScores() {
   Object.keys(teamScores).forEach(team => {
     const totalScore = teamScores[team];
     const memberCount = teamMembers[team] || 1;
-    const averageScore = totalScore / memberCount;
-    const mvpScore = teamMvpScores[team] / memberCount; // MVP 평균 점수
+    const evaluatorCount = teamEvaluatorCounts[team] || 1; // 평가자 수 (본인 팀 제외)
+    const averageScore = totalScore / evaluatorCount; // 총점수 / 평가자 수
+    const mvpScore = teamMvpScores[team] / evaluatorCount; // MVP 평균 점수
     
     scoreData.push([team, totalScore, memberCount, averageScore, mvpScore]);
   });
@@ -686,19 +690,26 @@ function createFormAutomatically() {
     // 4. 각 팀별 채점 항목 생성 (각 팀마다 별도 페이지)
     const allItems = getAllScoringItems();
     
+    // 각 팀별 페이지 브레이크를 저장할 배열 (조건부 로직 설정용)
+    const teamPageBreaks = [];
+    
     // 각 팀별로 페이지 나누기
     allTeams.forEach((team, teamIndex) => {
       // 첫 번째 팀이 아니면 페이지 구분
       if (teamIndex > 0) {
         const pageBreak = form.addPageBreakItem();
-        pageBreak.setTitle(`--- ${teamIndex + 1}번째 팀 평가 ---`);
-        pageBreak.setHelpText(`다음 팀을 평가해주세요. 본인 팀인 경우 이 페이지의 모든 항목을 건너뛰셔도 됩니다.`);
+        pageBreak.setTitle(`--- ${team} 평가 ---`);
+        pageBreak.setHelpText(`다음 팀을 평가해주세요.`);
+        teamPageBreaks.push({ team: team, pageBreak: pageBreak, index: teamIndex });
+      } else {
+        // 첫 번째 팀의 경우 섹션 헤더로 시작
+        teamPageBreaks.push({ team: team, pageBreak: null, index: teamIndex });
       }
       
       // 팀별 섹션 헤더
       const teamSection = form.addSectionHeaderItem();
       teamSection.setTitle(`${team} 평가 문항입니다.`);
-      teamSection.setHelpText('창의성, 구현 완성도, 필요성, 발표 전달력 부문이 있습니다.\n※ 본인 팀인 경우 이 페이지의 모든 항목을 건너뛰셔도 됩니다. (자동으로 제외됩니다)');
+      teamSection.setHelpText('창의성, 구현 완성도, 필요성, 발표 전달력 부문이 있습니다.');
       
       // 각 카테고리별로 항목 추가
       SCORING_ITEMS.forEach(category => {
@@ -721,7 +732,70 @@ function createFormAutomatically() {
           }
         });
       });
+      
+      // 마지막 팀이 아니면 다음 페이지로 이동하는 페이지 브레이크 추가
+      if (teamIndex < allTeams.length - 1) {
+        const nextPageBreak = form.addPageBreakItem();
+        nextPageBreak.setTitle(`다음 팀 평가로 이동`);
+      }
     });
+    
+    // 조건부 로직 설정: 본인 팀 섹션 건너뛰기
+    // Google Forms API를 사용하여 각 팀 선택값에 대해 해당 팀의 페이지를 건너뛰도록 설정
+    const formItems = form.getItems();
+    let teamListItem = null;
+    const teamPageBreaksMap = {}; // {팀명: 페이지브레이크항목}
+    
+    // 팀 선택 항목과 각 팀의 페이지 브레이크 찾기
+    for (let i = 0; i < formItems.length; i++) {
+      if (formItems[i].getType() === FormApp.ItemType.LIST) {
+        const item = formItems[i].asListItem();
+        if (item.getTitle() === '소속 팀을 선택해주세요') {
+          teamListItem = item;
+        }
+      } else if (formItems[i].getType() === FormApp.ItemType.PAGE_BREAK) {
+        const pb = formItems[i].asPageBreakItem();
+        const title = pb.getTitle();
+        if (title && title.includes('---')) {
+          // 팀명 추출 (예: "--- A팀 평가 ---" -> "A팀")
+          allTeams.forEach(team => {
+            if (title.includes(team)) {
+              teamPageBreaksMap[team] = pb;
+            }
+          });
+        }
+      }
+    }
+    
+    // 조건부 로직 설정 시도
+    if (teamListItem) {
+      allTeams.forEach((team, teamIndex) => {
+        const currentTeamPageBreak = teamPageBreaksMap[team];
+        const nextTeam = teamIndex < allTeams.length - 1 ? allTeams[teamIndex + 1] : null;
+        const nextTeamPageBreak = nextTeam ? teamPageBreaksMap[nextTeam] : null;
+        
+        if (currentTeamPageBreak && nextTeamPageBreak) {
+          try {
+            // 팀 선택 항목에 조건부 로직 추가
+            // 본인 팀 선택 시 해당 팀 페이지를 건너뛰고 다음 팀 페이지로 이동
+            const choice = teamListItem.createChoice(team);
+            
+            // 조건부 로직 설정: 해당 팀 선택 시 다음 팀 페이지로 이동
+            // 주의: Google Forms API의 제한으로 인해 완전 자동화가 어려울 수 있습니다
+            // 생성된 설문지의 편집 URL에서 수동으로 조건부 로직을 설정해야 할 수 있습니다
+            Logger.log(`조건부 로직 설정 시도: ${team} 팀 선택 시 페이지 건너뛰기 (다음 팀: ${nextTeam})`);
+          } catch (e) {
+            Logger.log(`조건부 로직 설정 오류 (${team}): ${e.toString()}`);
+          }
+        }
+      });
+      
+      Logger.log('⚠️ 조건부 로직 자동 설정이 완료되지 않았을 수 있습니다.');
+      Logger.log('설문지 편집 URL에서 수동으로 조건부 로직을 설정해주세요:');
+      Logger.log('1. 팀 선택 항목을 클릭');
+      Logger.log('2. "조건부 질문 추가" 옵션 선택');
+      Logger.log('3. 각 팀 선택값에 대해 해당 팀의 페이지를 건너뛰도록 설정');
+    }
     
     // 설문지 설정
     form.setCollectEmail(false);

@@ -266,10 +266,18 @@
                 <th>팀원수</th>
                 <th>평균점수</th>
                 <th>MVP점수</th>
+                <th>응답수</th>
+                <th>상세보기</th>
               </tr>
             </thead>
             <tbody id="scoresBody"></tbody>
           </table>
+        </div>
+        
+        <div class="section" id="responseDetailsSection" style="display: none;">
+          <h2 class="section-title">📋 응답 상세 내역</h2>
+          <button class="refresh-btn" onclick="closeResponseDetails()" style="margin-bottom: 20px;">← 목록으로 돌아가기</button>
+          <div id="responseDetailsContent"></div>
         </div>
         
         <div class="timestamp" id="timestamp"></div>
@@ -333,11 +341,20 @@
       // 점수 테이블 업데이트
       const scoresBody = document.getElementById('scoresBody');
       if (data.scores.length === 0) {
-        scoresBody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 30px;">아직 점수가 없습니다.</td></tr>';
+        scoresBody.innerHTML = '<tr><td colspan="8" style="text-align: center; padding: 30px;">아직 점수가 없습니다.</td></tr>';
       } else {
+        // 팀별 응답 수 계산
+        const teamResponseCounts = {};
+        if (data.teamResponseStats) {
+          data.teamResponseStats.forEach(stat => {
+            teamResponseCounts[stat.team] = stat.responseCount;
+          });
+        }
+        
         scoresBody.innerHTML = data.scores.map((score, index) => {
           const scoreClass = score.averageScore >= 80 ? 'score-high' : 
                            score.averageScore >= 60 ? 'score-medium' : 'score-low';
+          const responseCount = teamResponseCounts[score.team] || 0;
           return `
             <tr>
               <td><strong>${index + 1}</strong></td>
@@ -346,6 +363,8 @@
               <td>${score.memberCount}</td>
               <td class="${scoreClass}">${score.averageScore.toFixed(2)}</td>
               <td>${(score.mvpScore || 0).toFixed(2)}</td>
+              <td>${responseCount}</td>
+              <td><button class="refresh-btn" onclick="showResponseDetails('${score.team}')" style="padding: 8px 15px; font-size: 0.9em;">상세보기</button></td>
             </tr>
           `;
         }).join('');
@@ -373,6 +392,91 @@
           autoRefreshInterval = null;
         }
       }
+    }
+    
+    function showResponseDetails(teamName) {
+      document.getElementById('content').style.display = 'none';
+      document.getElementById('responseDetailsSection').style.display = 'block';
+      document.getElementById('responseDetailsContent').innerHTML = '<div class="loading">응답 데이터를 불러오는 중...</div>';
+      
+      google.script.run
+        .withSuccessHandler(function(responses) {
+          displayResponseDetails(teamName, responses);
+        })
+        .withFailureHandler(handleError)
+        .getTeamResponseDetails(teamName);
+    }
+    
+    function displayResponseDetails(teamName, responses) {
+      const content = document.getElementById('responseDetailsContent');
+      
+      if (responses.length === 0) {
+        content.innerHTML = '<p style="text-align: center; padding: 40px; font-size: 1.2em;">아직 응답이 없습니다.</p>';
+        return;
+      }
+      
+      const allItems = [
+        {category: '창의성', items: ['아이디어와 결과물이 얼마나 창의적인가? (현재 시장에서 찾아보기 어려운 독특하고 새로운 아이디어)', '제시된 아이디어가 실행 가능하면서도 독창적인가?', '기존에 있는 유사한 제품과 차별성이 있는가?']},
+        {category: '구현 완성도', items: ['프로젝트의 필수 기능이 구현되어있는가?', '예상치 못한 상황과 오류를 얼마나 잘 처리 하였는가?', '활용한 데이터와 기술에 대한 이해도가 충분했는가?']},
+        {category: '필요성', items: ['확장성 - 해당 기술이 타 제품에도 응용될 수 있는가?', '주제 적합성 - 사전에 공지된 주제에 적합한 아이디어를 구현하였는가?', '상품성 - 해당 기술이 우리 사회에 충분한 수요가 있는가?']},
+        {category: '발표 전달력', items: ['발표 속도가 적절하고 적절한 표현으로 발표하였는가?', '발표자료가 직관적이고 이해하기 쉽게 구성되었는가?']}
+      ];
+      
+      let html = `<h3 style="margin-bottom: 20px;">${teamName} 팀 응답 상세 (${responses.length}건)</h3>`;
+      
+      responses.forEach((response, index) => {
+        const date = new Date(response.timestamp);
+        html += `
+          <div style="background: #f5f7fa; padding: 20px; margin-bottom: 20px; border-radius: 10px;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 15px; padding-bottom: 10px; border-bottom: 2px solid #ddd;">
+              <div>
+                <strong>평가자:</strong> ${response.evaluatorName} (${response.evaluatorTeam})<br>
+                <strong>평가 시간:</strong> ${date.toLocaleString('ko-KR')}
+              </div>
+              <div style="font-size: 1.3em; font-weight: bold; color: #667eea;">
+                총점: ${response.totalScore.toFixed(2)}점
+              </div>
+            </div>
+            <table style="width: 100%; border-collapse: collapse;">
+              <thead>
+                <tr style="background: #667eea; color: white;">
+                  <th style="padding: 10px; text-align: left;">카테고리</th>
+                  <th style="padding: 10px; text-align: left;">항목</th>
+                  <th style="padding: 10px; text-align: center;">점수</th>
+                </tr>
+              </thead>
+              <tbody>
+        `;
+        
+        let itemIndex = 0;
+        allItems.forEach(category => {
+          category.items.forEach(item => {
+            const score = response.itemScores[itemIndex]?.score || 0;
+            html += `
+              <tr style="border-bottom: 1px solid #eee;">
+                <td style="padding: 8px; font-weight: bold; color: #667eea;">${category.category}</td>
+                <td style="padding: 8px;">${item}</td>
+                <td style="padding: 8px; text-align: center; font-weight: bold;">${score.toFixed(2)}</td>
+              </tr>
+            `;
+            itemIndex++;
+          });
+        });
+        
+        html += `
+              </tbody>
+            </table>
+          </div>
+        `;
+      });
+      
+      content.innerHTML = html;
+    }
+    
+    function closeResponseDetails() {
+      document.getElementById('responseDetailsSection').style.display = 'none';
+      document.getElementById('content').style.display = 'block';
+      loadData();
     }
     
     // 페이지 로드 시 데이터 불러오기
